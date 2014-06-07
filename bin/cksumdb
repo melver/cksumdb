@@ -91,8 +91,8 @@ db_init_file() {
 		msg "Using database: %s\n" "$arg_dbpath"
 	fi
 
-	#rsync -a --delete -f"+ */" -f"- *" "${arg_path}/" "${arg_dbpath}/" <-- does not remove empty dirs
-	rsync -a --max-size=0 --min-size=1 --delete "${arg_path}/" "${arg_dbpath}/"
+	#rsync -rq --delete -f"+ */" -f"- *" "${arg_path}/" "${arg_dbpath}/" <-- does not remove empty dirs
+	rsync -rq --max-size=0 --min-size=1 --delete "${arg_path}/" "${arg_dbpath}/"
 }
 
 db_get_file() {
@@ -130,7 +130,8 @@ db_set_file() {
 		die "Cannot set entry for: %s\n" "$path"
 	fi
 
-	printf "%s %s" "$mtime_size" "$cksum" > "$db_path"
+	printf "%s %s" "$mtime_size" "$cksum" > "$db_path" \
+		|| die "Cannot write to: %s\n" "$db_path"
 }
 
 db_init() {
@@ -139,12 +140,6 @@ db_init() {
 			[[ "$cmd" == "update" ]] && db_init_file || :
 			db_get() { db_get_file "$@"; }
 			db_set() { db_set_file "$@"; }
-			;;
-		sqlite)
-			# Can't do parallel
-			arg_parallel=0
-			die "Not yet implemented!\n"
-			type -p sqlite3 &>/dev/null || die "No sqlite3!"
 			;;
 		*)
 			die "Unknown database backend: %s\n" "$arg_backend"
@@ -191,7 +186,7 @@ barrier_pids() {
 
 update() {
 	local path="$1"
-	[[ -r "$path" ]] || die "Cannot read: %s\n" "$path"
+	[[ -r "${arg_path}/${path}" ]] || die "Cannot read: %s\n" "$path"
 
 	local f_mtime_size="$(get_mtime_size "${arg_path}/${path}")"
 	local db_mtime_size="$(db_get "$path" mtime_size)"
@@ -232,7 +227,7 @@ cmd_update() {
 
 verify() {
 	local path="$1"
-	[[ -r "$path" ]] || die "Cannot read: %s\n" "$path"
+	[[ -r "${arg_path}/${path}" ]] || die "Cannot read: %s\n" "$path"
 
 	local f_mtime_size="$(get_mtime_size "${arg_path}/${path}")"
 	local db_mtime_size="$(db_get "$path" mtime_size)"
@@ -293,7 +288,7 @@ Commands available:
 Options:
     --backend
         Select database backend. Default is 'file'.
-        Available backends: file, sqlite
+        Available backends: file,
     --dbprefix
         Specify a database path prefix.
     --all
