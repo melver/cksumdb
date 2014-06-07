@@ -190,6 +190,9 @@ barrier_pids() {
 }
 
 update() {
+	local path="$1"
+	[[ -r "$path" ]] || die "Cannot read: %s\n" "$path"
+
 	local f_mtime_size="$(get_mtime_size "${arg_path}/${path}")"
 	local db_mtime_size="$(db_get "$path" mtime_size)"
 
@@ -228,6 +231,9 @@ cmd_update() {
 }
 
 verify() {
+	local path="$1"
+	[[ -r "$path" ]] || die "Cannot read: %s\n" "$path"
+
 	local f_mtime_size="$(get_mtime_size "${arg_path}/${path}")"
 	local db_mtime_size="$(db_get "$path" mtime_size)"
 
