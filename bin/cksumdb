@@ -45,11 +45,11 @@ die() {
 }
 
 msg() {
-	printf -- "\e[1;32mINFO:\e[0m ""$@"
+	printf -- "\e[1;32mINFO:\e[0m ""$@" 1>&2
 }
 
 warn() {
-	printf -- "\e[1;33mWARN:\e[0m ""$@"
+	printf -- "\e[1;33mWARN:\e[0m ""$@" 1>&2
 }
 
 trap_ERR() {
@@ -197,7 +197,7 @@ update() {
 
 	local f_cksum="$(get_cksum "${arg_path}/${path}")"
 	if db_set "$path" "$f_mtime_size" "$f_cksum"; then
-		msg "Successfully updated: %s\n" "$path"
+		printf "Successfully updated: %s\n" "$path"
 	else
 		( die "Failed to update: %s\n" "$path" ) \
 			|| (( arg_all )) || exit 10
@@ -209,7 +209,7 @@ update() {
 cmd_update() {
 	db_init
 
-	msg "Updating: %s\n" "$arg_path" 1>&2
+	msg "Updating: %s\n" "$arg_path"
 
 	find "$arg_path" -type f -printf "%P\n" |
 	(
@@ -246,7 +246,7 @@ verify() {
 		( die "Checksum does not match [%s]: %s [%s]\n" "$db_cksum" "$path" "$f_cksum" ) \
 			|| (( arg_all )) || exit 10
 	else
-		msg "Checksum matches: %s\n" "$path"
+		printf "Checksum matches: %s\n" "$path"
 	fi
 
 	return 0
@@ -255,7 +255,7 @@ verify() {
 cmd_verify() {
 	db_init
 
-	msg "Verifying: %s\n" "$arg_path" 1>&2
+	msg "Verifying: %s\n" "$arg_path"
 
 	find "$arg_path" -type f -printf "%P\n" |
 	(
