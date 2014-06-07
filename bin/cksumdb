@@ -86,7 +86,9 @@ db_init_file() {
 		fi
 
 		mkdir -p "$arg_dbpath"
-		msg "Initialized database at: %s\n" "$arg_dbpath"
+		msg "Initialized database: %s\n" "$arg_dbpath"
+	else
+		msg "Using database: %s\n" "$arg_dbpath"
 	fi
 
 	#rsync -a --delete -f"+ */" -f"- *" "${arg_path}/" "${arg_dbpath}/" <-- does not remove empty dirs
