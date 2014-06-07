@@ -1,0 +1,361 @@
+#!/usr/bin/env bash
+#
+# Copyright (c) 2014, Marco Elver
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are
+# met:
+#
+#  * Redistributions of source code must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+#
+#  * Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the
+#    distribution.
+#
+#  * Neither the name of the software nor the names of its contributors
+#    may be used to endorse or promote products derived from this
+#    software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+# A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+# OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+# SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+# LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+# DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+# THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+set -o errtrace
+set -o errexit
+set -o nounset
+
+PROGNAME=cksumdb
+DIGEST=sha256
+readonly PROGNAME DIGEST
+
+die() {
+	printf -- "\e[1;31mERROR:\e[0m ""$@" 1>&2
+	exit 1
+}
+
+msg() {
+	printf -- "\e[1;32mINFO:\e[0m ""$@"
+}
+
+warn() {
+	printf -- "\e[1;33mWARN:\e[0m ""$@"
+}
+
+trap_ERR() {
+	local errcode="$1"
+	local lineno="$2"
+	local command="$3"
+	shift 3
+	local traceback=""
+
+	[[ -n "$*" ]] && printf -v traceback "\n    => in %s" "$@"
+	die "line %s - '%s' failed (code=%s)%s\n" "$lineno" "$command" "$errcode" "$traceback"
+}
+trap 'trap_ERR "$?" "$LINENO" "$BASH_COMMAND" "${FUNCNAME[@]:+${FUNCNAME[@]}}"' ERR
+
+# Check if we have all non-builtin dependencies
+type -p openssl &>/dev/null || die "No openssl!\n"
+type -p rsync   &>/dev/null || die "No rsync!\n"
+
+get_cksum() {
+	local path="$1"
+	local cksum="$(openssl dgst -$DIGEST < "$path")"
+	printf "%s" "${cksum##* }"
+}
+
+get_mtime_size() {
+	local path="$1"
+	stat -c "%Y-%s" "$path"
+}
+
+db_init_file() {
+	if [[ ! -d "$arg_dbpath" ]]; then
+		if [[ -e "$arg_dbpath" ]]; then
+			die "Invalid database!"
+		fi
+
+		mkdir -p "$arg_dbpath"
+		msg "Initialized database at: %s\n" "$arg_dbpath"
+	fi
+
+	#rsync -a --delete -f"+ */" -f"- *" "${arg_path}/" "${arg_dbpath}/" <-- does not remove empty dirs
+	rsync -a --max-size=0 --min-size=1 --delete "${arg_path}/" "${arg_dbpath}/"
+}
+
+db_get_file() {
+	local path="$1"
+	local attr="$2"
+	local data
+	local db_path="${arg_dbpath}/${path}"
+
+	if [[ -f "$db_path" ]]; then
+		data="$(< "$db_path")"
+	else
+		return 0
+	fi
+
+	case "$attr" in
+		mtime_size)
+			printf "%s" "${data% *}"
+			;;
+		cksum)
+			printf "%s" "${data#* }"
+			;;
+		*)
+			die "Invalid attribute: %s\n" "$attr"
+			;;
+	esac
+}
+
+db_set_file() {
+	local path="$1"
+	local mtime_size="$2"
+	local cksum="$3"
+	local db_path="${arg_dbpath}/${path}"
+
+	if [[ ! -d "${db_path%/*}" ]]; then
+		die "Cannot set entry for: %s\n" "$path"
+	fi
+
+	printf "%s %s" "$mtime_size" "$cksum" > "$db_path"
+}
+
+db_init() {
+	case "$arg_backend" in
+		file)
+			[[ "$cmd" == "update" ]] && db_init_file || :
+			db_get() { db_get_file "$@"; }
+			db_set() { db_set_file "$@"; }
+			;;
+		sqlite)
+			# Can't do parallel
+			arg_parallel=0
+			die "Not yet implemented!\n"
+			type -p sqlite3 &>/dev/null || die "No sqlite3!"
+			;;
+		*)
+			die "Unknown database backend: %s\n" "$arg_backend"
+			;;
+	esac
+}
+
+refresh_pids() {
+	local pid_count="${#pids[@]}"
+	(( pid_count < arg_parallel )) && return 0 || :
+
+	local _pids=("${pids[@]}")
+
+	local stalled=0
+	while :; do
+		pids=()
+		for pid in "${_pids[@]}"; do
+			if kill -0 "$pid" &>/dev/null; then
+				pids+=($pid)
+			fi
+		done
+
+		if (( ${#pids[@]} < arg_parallel )); then
+			break
+		elif (( stalled++ > 100 )); then
+			sleep 0.01
+		fi
+	done
+}
+
+barrier_pids() {
+	local all_done=0
+	while (( ! all_done )); do
+		all_done=1
+		for pid in "${pids[@]:+${pids[@]}}"; do
+			if kill -0 "$pid" &>/dev/null; then
+				all_done=0
+				break
+			fi
+		done
+		(( all_done )) || sleep 1
+	done
+}
+
+update() {
+	local f_mtime_size="$(get_mtime_size "${arg_path}/${path}")"
+	local db_mtime_size="$(db_get "$path" mtime_size)"
+
+	[[ "$f_mtime_size" == "$db_mtime_size" ]] && return 0 || :
+
+	local f_cksum="$(get_cksum "${arg_path}/${path}")"
+	if db_set "$path" "$f_mtime_size" "$f_cksum"; then
+		msg "Successfully updated: %s\n" "$path"
+	else
+		( die "Failed to update: %s\n" "$path" ) \
+			|| (( arg_all )) || exit 10
+	fi
+
+	return 0
+}
+
+cmd_update() {
+	db_init
+
+	msg "Updating: %s\n" "$arg_path" 1>&2
+
+	find "$arg_path" -type f -printf "%P\n" |
+	(
+		pids=()
+		while read path; do
+			if (( arg_parallel )); then
+				( update "$path" ) &
+				pids+=($!)
+				refresh_pids
+			else
+				update "$path"
+			fi
+		done
+		barrier_pids
+	) || exit $?
+}
+
+verify() {
+	local f_mtime_size="$(get_mtime_size "${arg_path}/${path}")"
+	local db_mtime_size="$(db_get "$path" mtime_size)"
+
+	if [[ -z "$db_mtime_size" ]]; then
+		warn "No mtime/size entry: %s\n" "$path"
+		return 0
+	elif [[ "$f_mtime_size" != "$db_mtime_size" ]]; then
+		warn "mtime/size entry does not match: %s\n" "$path"
+		return 0
+	fi
+
+	local f_cksum="$(get_cksum "${arg_path}/${path}")"
+	local db_cksum="$(db_get "$path" cksum)"
+
+	if [[ "$f_cksum" != "$db_cksum" ]]; then
+		( die "Checksum does not match [%s]: %s [%s]\n" "$db_cksum" "$path" "$f_cksum" ) \
+			|| (( arg_all )) || exit 10
+	else
+		msg "Checksum matches: %s\n" "$path"
+	fi
+
+	return 0
+}
+
+cmd_verify() {
+	db_init
+
+	msg "Verifying: %s\n" "$arg_path" 1>&2
+
+	find "$arg_path" -type f -printf "%P\n" |
+	(
+		pids=()
+		while read path; do
+			if (( arg_parallel )); then
+				( verify "$path" ) &
+				pids+=($!)
+				refresh_pids
+			else
+				verify "$path"
+			fi
+		done
+		barrier_pids
+	) || exit $?
+}
+
+##
+# PARSE OPTIONS
+#
+prog_usage() {
+	printf -- "\
+Usage: %s [<options>] <command> <path>
+
+Commands available:
+    update    Update checksum database, reporting changed files.
+    verify    Verify files from database.
+
+Options:
+    --backend
+        Select database backend. Default is 'file'.
+        Available backends: file, sqlite
+    --dbprefix
+        Specify a database path prefix.
+    --all
+        If we encounter a non-critical error during update or verify, continue.
+    --parallel
+        Specify number of parallel verify/update tasks. Implies --all.
+" "$PROGNAME"
+	exit 42
+}
+
+arg_backend=file
+arg_dbprefix=
+arg_all=0
+arg_parallel=0
+
+while :; do
+	case "${1:-}" in
+		--backend)
+			[[ -n "${2:-}" ]] || prog_usage
+			arg_backend="$2"
+			shift
+			;;
+		--dbprefix)
+			[[ -n "${2:-}" ]] || prog_usage
+			arg_dbprefix="$2"
+			shift
+			;;
+		--all)
+			arg_all=1
+			;;
+		--parallel)
+			[[ -n "${2:-}" ]] || prog_usage
+			arg_parallel="$2"
+			shift
+			;;
+		-*) prog_usage ;;
+		*) break;;
+	esac
+	shift
+done
+
+cmd="${1:-}"
+shift || :
+
+trap 'msg "User aborted!\n"; exit 42' INT
+
+start_time="$(date +"%s")"
+case "${cmd}" in
+	update|verify)
+		arg_path="${1:-}"
+
+		if [[ -z "$arg_path" ]]; then
+			die "Please specify a valid directory!\n"
+		fi
+
+		if [[ ! -d "$arg_path" ]]; then
+			die "Not a valid directory: %s\n" "$arg_path"
+		fi
+
+		arg_path="$(cd "$arg_path" && pwd)"
+		arg_dbpath="${arg_dbprefix%/}${arg_path%/*}/.${arg_path##*/}-${PROGNAME}.${arg_backend}"
+		
+		cmd_${cmd}
+		;;
+	*)
+		prog_usage
+		;;
+esac
+
+total_time=$(( $(date +"%s") - start_time ))
+msg "Elapsed time: %.2d:%.2d\n" "$(( total_time / 60 ))" "$(( total_time % 60 ))" 1>&2
+
+exit 0
