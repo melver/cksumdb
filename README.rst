@@ -4,6 +4,16 @@ cksumdb
 
 Simple BASH script to generate file checksums in various database formats.
 
+At the moment the follow backends are provided:
+
+file: Store metadata in an identical tree.
+
+xattr: Store metadata in extended attributes, if supported by filesystem (e.g.
+ext4).
+
+Unlike xattr, the file backend still works if files only have read permissions,
+but not write permissions.
+
 Alternatives
 ------------
 

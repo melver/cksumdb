@@ -64,9 +64,8 @@ trap_ERR() {
 }
 trap 'trap_ERR "$?" "$LINENO" "$BASH_COMMAND" "${FUNCNAME[@]:+${FUNCNAME[@]}}"' ERR
 
-# Check if we have all non-builtin dependencies
+# Check if we have all non-standard dependencies:
 type -p openssl &>/dev/null || die "No openssl!\n"
-type -p rsync   &>/dev/null || die "No rsync!\n"
 
 get_cksum() {
 	local path="$1"
@@ -76,14 +75,13 @@ get_cksum() {
 
 get_mtime_size() {
 	local path="$1"
-	stat -c "%Y-%s" "$path"
+	stat -c "%Y_%s" "$path"
 }
 
 db_init_file() {
 	if [[ ! -d "$arg_dbpath" ]]; then
-		if [[ -e "$arg_dbpath" ]]; then
-			die "Invalid database!"
-		fi
+		[[ -e "$arg_dbpath" ]] && die "Invalid database!" || :
+		[[ "$cmd" == "update" ]] || die "Database does not exist!\n"
 
 		mkdir -p "$arg_dbpath"
 		msg "Initialized database: %s\n" "$arg_dbpath"
@@ -91,8 +89,12 @@ db_init_file() {
 		msg "Using database: %s\n" "$arg_dbpath"
 	fi
 
-	#rsync -rq --delete -f"+ */" -f"- *" "${arg_path}/" "${arg_dbpath}/" <-- does not remove empty dirs
-	rsync -rq --max-size=0 --min-size=1 --delete "${arg_path}/" "${arg_dbpath}/"
+	if [[ "$cmd" == "update" ]]; then
+		type -p rsync &>/dev/null || die "No rsync!\n"
+
+		#rsync -rq --delete -f"+ */" -f"- *" "${arg_path}/" "${arg_dbpath}/" <-- does not remove empty dirs
+		rsync -rq --max-size=0 --min-size=1 --delete "${arg_path}/" "${arg_dbpath}/"
+	fi
 }
 
 db_get_file() {
@@ -134,12 +136,52 @@ db_set_file() {
 		|| die "Cannot write to: %s\n" "$db_path"
 }
 
+db_init_xattr() {
+	if ! type -p setfattr &>/dev/null || ! type -p setfattr &>/dev/null; then
+		die "No setfattr/getfattr!"
+	fi
+}
+
+db_get_xattr() {
+	local path="$1"
+	local attr="$2"
+	local data
+	local full_path="${arg_path}/${path}"
+
+	case "$attr" in
+		mtime_size|cksum)
+			getfattr --only-values -n "user.${PROGNAME}.${attr}" "$full_path" 2>/dev/null || :
+			;;
+		*)
+			die "Invalid attribute: %s\n" "$attr"
+			;;
+	esac
+}
+
+db_set_xattr() {
+	local path="$1"
+	local mtime_size="$2"
+	local cksum="$3"
+	local full_path="${arg_path}/${path}"
+
+	if     ! setfattr -n "user.${PROGNAME}.mtime_size" -v "$mtime_size" "$full_path" \
+		|| ! setfattr -n "user.${PROGNAME}.cksum"      -v "$cksum"      "$full_path"
+	then
+		die "Cannot set xattr: %s\n" "$path"
+	fi
+}
+
 db_init() {
 	case "$arg_backend" in
 		file)
-			[[ "$cmd" == "update" ]] && db_init_file || :
+			db_init_file
 			db_get() { db_get_file "$@"; }
 			db_set() { db_set_file "$@"; }
+			;;
+		xattr)
+			db_init_xattr
+			db_get() { db_get_xattr "$@"; }
+			db_set() { db_set_xattr "$@"; }
 			;;
 		*)
 			die "Unknown database backend: %s\n" "$arg_backend"
@@ -182,7 +224,7 @@ barrier_pids() {
 				break
 			fi
 		done
-		(( all_done )) || sleep 1
+		(( all_done )) || sleep 0.5
 	done
 }
 
@@ -224,11 +266,10 @@ update() {
 }
 
 cmd_update() {
+	msg "Updating: %s\n" "$arg_path"
 	db_init
 
-	msg "Updating: %s\n" "$arg_path"
-
-	find "$arg_path" -type f -printf "%P\n" |
+	find "$arg_path" -xdev -type f -printf "%P\n" |
 	(
 		pids=()
 		while :; do
@@ -274,11 +315,10 @@ verify() {
 }
 
 cmd_verify() {
+	msg "Verifying: %s\n" "$arg_path"
 	db_init
 
-	msg "Verifying: %s\n" "$arg_path"
-
-	find "$arg_path" -type f -printf "%P\n" |
+	find "$arg_path" -xdev -type f -printf "%P\n" |
 	(
 		pids=()
 		while :; do
@@ -308,7 +348,7 @@ Commands available:
 Options:
     --backend
         Select database backend. Default is 'file'.
-        Available backends: file,
+        Available backends: file, xattr
     --dbprefix
         Specify a database path prefix.
     --all
@@ -383,6 +423,6 @@ case "${cmd}" in
 esac
 
 total_time=$(( $(date +"%s") - start_time ))
-msg "Elapsed time: %.2d:%.2d\n" "$(( total_time / 60 ))" "$(( total_time % 60 ))" 1>&2
+msg "Elapsed time: %.2d:%.2d\n" "$(( total_time / 60 ))" "$(( total_time % 60 ))"
 
 exit 0
