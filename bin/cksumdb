@@ -215,10 +215,9 @@ update() {
 
 	local f_cksum="$(get_cksum "${arg_path}/${path}")"
 	if db_set "$path" "$f_mtime_size" "$f_cksum"; then
-		printf "Successfully updated: %s\n" "$path"
+		printf "updated: %s\n" "$path"
 	else
-		( die "Failed to update: %s\n" "$path" ) \
-			|| (( arg_all )) || exit 10
+		die "Failed to update: %s\n" "$path"
 	fi
 
 	return 0
@@ -253,10 +252,10 @@ verify() {
 	local db_mtime_size="$(db_get "$path" mtime_size)"
 
 	if [[ -z "$db_mtime_size" ]]; then
-		warn "No mtime/size entry: %s\n" "$path"
+		warn "unknown: %s\n" "$path"
 		return 0
 	elif [[ "$f_mtime_size" != "$db_mtime_size" ]]; then
-		warn "mtime/size entry does not match: %s\n" "$path"
+		warn "modified: %s\n" "$path"
 		return 0
 	fi
 
@@ -264,10 +263,11 @@ verify() {
 	local db_cksum="$(db_get "$path" cksum)"
 
 	if [[ "$f_cksum" != "$db_cksum" ]]; then
-		( die "Checksum does not match [%s]: %s [%s]\n" "$db_cksum" "$path" "$f_cksum" ) \
-			|| (( arg_all )) || exit 10
+		local corruptmsg
+		(( arg_all )) && corruptmsg=warn || corruptmsg=die
+		$corruptmsg "corrupt: %s [%s != %s]\n" "$path" "$f_cksum" "$db_cksum"
 	else
-		printf "Checksum matches: %s\n" "$path"
+		printf "ok: %s\n" "$path"
 	fi
 
 	return 0
@@ -312,7 +312,7 @@ Options:
     --dbprefix
         Specify a database path prefix.
     --all
-        If we encounter a non-critical error during update or verify, continue.
+        If we encounter a corruption during verify, continue.
     --parallel
         Specify number of parallel verify/update tasks. Format: <tasks>[,<jobs-per-task>]. Implies --all.
 " "$PROGNAME"
@@ -345,6 +345,7 @@ while :; do
 			if (( ${#arg_parallel[@]} == 1 )); then
 				arg_parallel+=(8)
 			fi
+			arg_all=1
 			shift
 			;;
 		-*) prog_usage ;;
