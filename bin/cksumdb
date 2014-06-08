@@ -149,7 +149,7 @@ db_init() {
 
 refresh_pids() {
 	local pid_count="${#pids[@]}"
-	(( pid_count < arg_parallel )) && return 0 || :
+	(( pid_count < ${arg_parallel[0]} )) && return 0 || :
 
 	local _pids=("${pids[@]}")
 
@@ -162,10 +162,12 @@ refresh_pids() {
 			fi
 		done
 
-		if (( ${#pids[@]} < arg_parallel )); then
+		if (( ${#pids[@]} < ${arg_parallel[0]} )); then
 			break
-		elif (( stalled++ > 100 )); then
+		elif (( stalled > 5 )); then
 			sleep 0.01
+		else
+			(( ++stalled )) || :
 		fi
 	done
 }
@@ -182,6 +184,24 @@ barrier_pids() {
 		done
 		(( all_done )) || sleep 1
 	done
+}
+
+spawn_tasks() {
+	local fn="$1"
+	local path_jobs=()
+	local jobs_per_task=${arg_parallel[1]}
+	local path
+	while (( jobs_per_task-- )); do
+		read path || break
+		path_jobs+=("$path")
+	done
+	(
+		for path in "${path_jobs[@]:+${path_jobs[@]}}"; do
+			$fn "$path"
+		done
+	) &
+	pids+=($!)
+	(( ${#path_jobs[@]} < ${arg_parallel[1]} )) && return 1 || :
 }
 
 update() {
@@ -212,12 +232,12 @@ cmd_update() {
 	find "$arg_path" -type f -printf "%P\n" |
 	(
 		pids=()
-		while read path; do
-			if (( arg_parallel )); then
-				( update "$path" ) &
-				pids+=($!)
+		while :; do
+			if (( ${arg_parallel[0]} )); then
+				spawn_tasks update || break
 				refresh_pids
 			else
+				read path || break
 				update "$path"
 			fi
 		done
@@ -261,12 +281,12 @@ cmd_verify() {
 	find "$arg_path" -type f -printf "%P\n" |
 	(
 		pids=()
-		while read path; do
-			if (( arg_parallel )); then
-				( verify "$path" ) &
-				pids+=($!)
+		while :; do
+			if (( ${arg_parallel[0]} )); then
+				spawn_tasks verify || break
 				refresh_pids
 			else
+				read path || break
 				verify "$path"
 			fi
 		done
@@ -294,7 +314,7 @@ Options:
     --all
         If we encounter a non-critical error during update or verify, continue.
     --parallel
-        Specify number of parallel verify/update tasks. Implies --all.
+        Specify number of parallel verify/update tasks. Format: <tasks>[,<jobs-per-task>]. Implies --all.
 " "$PROGNAME"
 	exit 42
 }
@@ -302,7 +322,7 @@ Options:
 arg_backend=file
 arg_dbprefix=
 arg_all=0
-arg_parallel=0
+arg_parallel=(0)
 
 while :; do
 	case "${1:-}" in
@@ -321,7 +341,10 @@ while :; do
 			;;
 		--parallel)
 			[[ -n "${2:-}" ]] || prog_usage
-			arg_parallel="$2"
+			IFS=, read -ra arg_parallel <<< "$2"
+			if (( ${#arg_parallel[@]} == 1 )); then
+				arg_parallel+=(8)
+			fi
 			shift
 			;;
 		-*) prog_usage ;;
