@@ -339,7 +339,7 @@ cmd_verify() {
 #
 prog_usage() {
 	printf -- "\
-Usage: %s [<options>] <command> <path>
+Usage: %s [<options>] <command> <path>...
 
 Commands available:
     update    Update checksum database, reporting changed files.
@@ -402,20 +402,18 @@ trap 'msg "User aborted!\n"; exit 42' INT
 start_time="$(date +"%s")"
 case "${cmd}" in
 	update|verify)
-		arg_path="${1:-}"
+		(( ! $# )) && prog_usage || :
 
-		if [[ -z "$arg_path" ]]; then
-			die "Please specify a valid directory!\n"
-		fi
+		for arg_path in "$@"; do
+			if [[ ! -d "$arg_path" ]]; then
+				die "Not a valid directory: %s\n" "$arg_path"
+			fi
 
-		if [[ ! -d "$arg_path" ]]; then
-			die "Not a valid directory: %s\n" "$arg_path"
-		fi
-
-		arg_path="$(cd "$arg_path" && pwd)"
-		arg_dbpath="${arg_dbprefix%/}${arg_path%/*}/.${arg_path##*/}-${PROGNAME}.${arg_backend}"
+			arg_path="$(cd "$arg_path" && pwd)"
+			arg_dbpath="${arg_dbprefix%/}${arg_path%/*}/.${arg_path##*/}-${PROGNAME}.${arg_backend}"
 		
-		cmd_${cmd}
+			cmd_${cmd}
+		done
 		;;
 	*)
 		prog_usage
