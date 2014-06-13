@@ -36,6 +36,7 @@ set -o errexit
 set -o nounset
 
 PROGNAME=cksumdb
+BACKEND=file
 DIGEST=sha256
 readonly PROGNAME DIGEST
 
@@ -69,7 +70,7 @@ type -p openssl &>/dev/null || die "No openssl!\n"
 
 get_cksum() {
 	local path="$1"
-	local cksum="$(openssl dgst -$DIGEST < "$path")"
+	local cksum="$(openssl dgst -$arg_digest < "$path")"
 	printf "%s" "${cksum##* }"
 }
 
@@ -346,26 +347,32 @@ Commands available:
     verify    Verify files from database.
 
 Options:
+    --all
+        If we encounter a corruption during verify, continue.
     --backend
-        Select database backend. Default is 'file'.
+        Select database backend. Default: $BACKEND
         Available backends: file, xattr
     --dbprefix
         Specify a database path prefix.
-    --all
-        If we encounter a corruption during verify, continue.
+    --digest
+        Specify hash digest method. Default: $DIGEST
     --parallel
         Specify number of parallel verify/update tasks. Format: <tasks>[,<jobs-per-task>]. Implies --all.
 " "$PROGNAME"
 	exit 42
 }
 
-arg_backend=file
-arg_dbprefix=
 arg_all=0
+arg_backend="$BACKEND"
+arg_dbprefix=
+arg_digest="$DIGEST"
 arg_parallel=(0)
 
 while :; do
 	case "${1:-}" in
+		--all)
+			arg_all=1
+			;;
 		--backend)
 			[[ -n "${2:-}" ]] || prog_usage
 			arg_backend="$2"
@@ -376,8 +383,10 @@ while :; do
 			arg_dbprefix="$2"
 			shift
 			;;
-		--all)
-			arg_all=1
+		--digest)
+			[[ -n "${2:-}" ]] || prog_usage
+			arg_digest="$2"
+			shift
 			;;
 		--parallel)
 			[[ -n "${2:-}" ]] || prog_usage
@@ -411,7 +420,6 @@ case "${cmd}" in
 
 			arg_path="$(cd "$arg_path" && pwd)"
 			arg_dbpath="${arg_dbprefix%/}${arg_path%/*}/.${arg_path##*/}-${PROGNAME}.${arg_backend}"
-		
 			cmd_${cmd}
 		done
 		;;
