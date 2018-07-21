@@ -93,8 +93,8 @@ db_init_file() {
 	if [[ "$cmd" == "update" ]]; then
 		type -p rsync &>/dev/null || die "No rsync!\n"
 
-		#rsync -rq --delete -f"+ */" -f"- *" "${arg_path}/" "${arg_dbpath}/" <-- does not remove empty dirs
-		rsync -rq --max-size=0 --min-size=1 --delete "${arg_path}/" "${arg_dbpath}/"
+		# Mirror directory structure
+		rsync -rq --max-size=0 --min-size=1 --delete "${arg_path}/" "${arg_dbpath}"
 	fi
 }
 
@@ -131,6 +131,11 @@ db_set_file() {
 
 	if [[ ! -d "${db_path%/*}" ]]; then
 		die "Cannot set entry for: %s\n" "$path"
+	fi
+
+	if [[ -d "$db_path" ]]; then
+		# Was directory, now is regular file.
+		rm -r "$db_path"
 	fi
 
 	printf "%s %s" "$mtime_size" "$cksum" > "$db_path" \
