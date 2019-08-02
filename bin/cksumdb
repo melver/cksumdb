@@ -240,7 +240,7 @@ spawn_tasks() {
 	local jobs_per_task=${arg_parallel[1]}
 	local path
 	while (( jobs_per_task-- )); do
-		read path || break
+		read -r path || break
 		path_jobs+=("$path")
 	done
 	(
@@ -283,7 +283,7 @@ cmd_update() {
 				spawn_tasks update || break
 				refresh_pids
 			else
-				read path || break
+				read -r path || break
 				update "$path"
 			fi
 		done
@@ -332,7 +332,7 @@ cmd_verify() {
 				spawn_tasks verify || break
 				refresh_pids
 			else
-				read path || break
+				read -r path || break
 				verify "$path"
 			fi
 		done
